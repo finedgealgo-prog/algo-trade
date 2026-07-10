@@ -1358,19 +1358,6 @@ trade_router = APIRouter(prefix="/trade")   # live order placement/management li
 # here too. algo.trade's own api only contains algo.trade-specific routes.
 
 
-class RegisterIn(BaseModel):
-    mobile: str
-    name: str
-    email: str
-    password: str
-    referral_code: Optional[str] = None
-
-
-class LoginIn(BaseModel):
-    mobile: str
-    password: str
-
-
 class TelegramUsernameIn(BaseModel):
     telegram_username: str
 
@@ -1924,7 +1911,7 @@ def health():
 # ─── App user auth (mobile + password, JWT) ──────────────────────────────────
 
 @router.post("/auth/register")
-def auth_register(payload: RegisterIn):
+def auth_register(payload: app_auth.RegisterIn):
     db   = MongoData()
     user = app_auth.register_user(db, payload.model_dump())
     token = app_auth.create_access_token(str(user["_id"]), user["mobile"])
@@ -1936,7 +1923,7 @@ def auth_register(payload: RegisterIn):
 
 
 @router.post("/auth/login")
-def auth_login(payload: LoginIn):
+def auth_login(payload: app_auth.LoginIn):
     db   = MongoData()
     user = app_auth.authenticate_user(db, payload.mobile, payload.password)
     token = app_auth.create_access_token(str(user["_id"]), user["mobile"])
@@ -10248,7 +10235,7 @@ async def get_option_chain_snapshot(
             _stale = True
 
         if _stale:
-            from features.option_chain_kite_snapshot import get_option_chain_kite_snapshot
+            from option_chain_kite_snapshot import get_option_chain_kite_snapshot
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
                 None, lambda: get_option_chain_kite_snapshot(db, normalized, norm_ts)
@@ -10261,7 +10248,7 @@ async def get_option_chain_snapshot(
              "iv": 1, "delta": 1, "oi": 1, "timestamp": 1},
         ))
         if not raw_rows:
-            from features.option_chain_kite_snapshot import get_option_chain_kite_snapshot
+            from option_chain_kite_snapshot import get_option_chain_kite_snapshot
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
                 None, lambda: get_option_chain_kite_snapshot(db, normalized, norm_ts)
@@ -10341,7 +10328,7 @@ async def clear_option_chain_kite_cache(
     ?underlying=NIFTY&date=2026-05-26  → clear one entry
     ?underlying=NIFTY                  → clear all dates for that underlying
     (no params)                        → clear everything"""
-    from features.option_chain_kite_snapshot import clear_day_cache
+    from option_chain_kite_snapshot import clear_day_cache
     clear_day_cache(underlying.upper() or None, date or None)
     return {"cleared": True, "underlying": underlying or "all", "date": date or "all"}
 
@@ -10356,7 +10343,7 @@ async def backfill_option_chain_today(
     if not ul:
         raise HTTPException(status_code=400, detail="instrument required")
 
-    from features.option_chain_kite_snapshot import backfill_today_to_db
+    from option_chain_kite_snapshot import backfill_today_to_db
     db = MongoData()
     try:
         loop = asyncio.get_running_loop()
@@ -10398,7 +10385,7 @@ async def backfill_option_chain_today_get(
     if expiry_filter and len(expiry_filter) != 10:
         raise HTTPException(status_code=400, detail="expiry must be YYYY-MM-DD")
 
-    from features.option_chain_backfill import start_backfill
+    from option_chain_backfill import start_backfill
     return start_backfill(
         ul,
         date_str=date.strip() or None,
@@ -10412,14 +10399,14 @@ async def backfill_option_chain_today_get(
 @app.get("/algo/option-chain/backfill-status")
 async def get_backfill_status():
     """Check progress of a running or completed backfill."""
-    from features.option_chain_backfill import get_backfill_status
+    from option_chain_backfill import get_backfill_status
     return get_backfill_status()
 
 
 @app.get("/algo/option-chain/backfill-stop")
 async def stop_option_chain_backfill():
     """Request the running option-chain backfill thread to stop."""
-    from features.option_chain_backfill import stop_backfill
+    from option_chain_backfill import stop_backfill
     return stop_backfill()
 
 
