@@ -117,7 +117,7 @@ async def _auto_start_central_ticker() -> None:
 
 
 # ── Chart domain (TradingView chart-state/alerts/symbol search+history) ──────
-# chart_api.py is symlinked in from ../algo.chart/chart_api.py, same mount as
+# chart_api.py is symlinked in from ../shared/chart_api.py, same mount as
 # algo.scanner and algo.simulator — its data layer (features/chart_data.py)
 # only depends on shared/features/, so it's importable from any service.
 # Deliberately NOT calling start_chart_background_loops() here: that starts

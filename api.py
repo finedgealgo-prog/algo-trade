@@ -74,6 +74,7 @@ from features.spot_atm_utils import get_cached_spot_doc
 from features.execution_socket import (
     broadcast_backtest_simulation_step,
     emit_broker_settings_for_user,
+    emit_execute_order_for_user,
     queue_execute_order_group_start,
     run_backtest_simulation_step,
     socket_router,
@@ -3610,6 +3611,26 @@ async def portfolio_activate(payload: dict, current_user: dict = Depends(app_aut
     algo_trades_col.insert_many(docs_to_insert, ordered=True)
     resolved_group_id = str((((docs_to_insert[0] or {}).get("portfolio") or {}).get("group_id") or "")).strip() if docs_to_insert else ""
 
+    # Push the newly activated trade(s) to the execute-orders socket immediately
+    # instead of waiting on the dirty-flag flush, which only runs on that
+    # socket's ~1s receive-timeout cycle (and only once something later marks
+    # the user dirty). Without this, a freshly activated strategy doesn't show
+    # up in "Deployed Portfolios" for a couple of seconds after activation.
+    try:
+        await emit_execute_order_for_user(
+            db,
+            user_id=authenticated_user_id,
+            trade_date=now_ts[:10],
+            activation_mode=activation_mode,
+            group_id=resolved_group_id,
+            trade_ids=[str(doc.get("_id") or "") for doc in docs_to_insert],
+            trigger="activation",
+            message="Strategy activated",
+            force=True,
+        )
+    except Exception as _emit_exc:
+        log.error("portfolio/activate immediate emit error: %s", _emit_exc)
+
     return {
         "success": True,
         "portfolio_id": source_portfolio_id,
@@ -5704,15 +5725,22 @@ async def _simulator_place_manual_order_core(body: ManualOrderRequest) -> dict:
                     price=price,
                     trigger_price=leg.trigger_price or 0.0,
                     context={"purpose": "manual_order_pad", "broker": "dhan", "symbol": resolved["symbol"]},
+                    broker_kwargs={"security_id": resolved["security_id"], "exchange_segment": resolved["exchange_segment"]},
                 )
                 if result["status"] != "success":
                     return {"leg": leg.model_dump(), "status": "error", "message": result["message"]}
-                return {"leg": leg.model_dump(), "status": "success", "order_id": result["order_id"]}
+                return {
+                    "leg": leg.model_dump(), "status": "success", "order_id": result["order_id"],
+                    "broker_status": result.get("broker_status", "UNKNOWN"),
+                    "average_price": result.get("average_price"),
+                    "filled_quantity": result.get("filled_quantity"),
+                }
 
-            # Every leg in the basket fires at once instead of waiting on the previous leg's
-            # broker round-trip — for a multi-leg strategy that's the difference between the
-            # whole basket landing together vs. legs getting staggered fills at drifting prices.
-            dhan_results: list[dict] = await asyncio.gather(*(_place_one_dhan_leg(leg) for leg in body.orders))
+            # BUY legs place first (as one batch), then SELL legs (as a second batch) —
+            # see place_legs_hedge_ordered's docstring: gives the broker a real BUY
+            # position ahead of the SELL leg instead of both sides landing at once.
+            from features.order_execution import place_legs_hedge_ordered
+            dhan_results: list[dict] = await place_legs_hedge_ordered(body.orders, _place_one_dhan_leg)
 
             any_ok = any(r["status"] == "success" for r in dhan_results)
             all_ok = bool(dhan_results) and all(r["status"] == "success" for r in dhan_results)
@@ -5797,11 +5825,16 @@ async def _simulator_place_manual_order_core(body: ManualOrderRequest) -> dict:
                 print(f"[PLACE_ORDER][flattrade] response={result}", flush=True)
                 if result["status"] != "success":
                     return {"leg": leg.model_dump(), "status": "error", "message": result["message"]}
-                return {"leg": leg.model_dump(), "status": "success", "order_id": result["order_id"]}
+                return {
+                    "leg": leg.model_dump(), "status": "success", "order_id": result["order_id"],
+                    "broker_status": result.get("broker_status", "UNKNOWN"),
+                    "average_price": result.get("average_price"),
+                    "filled_quantity": result.get("filled_quantity"),
+                }
 
-            # Whole basket fires together instead of one leg waiting on the previous leg's
-            # broker round-trip — same reasoning as the Dhan branch above.
-            results = await asyncio.gather(*(_place_one_flattrade_leg(leg) for leg in body.orders))
+            # BUY-then-SELL batching — same reasoning as the Dhan branch above.
+            from features.order_execution import place_legs_hedge_ordered
+            results = await place_legs_hedge_ordered(body.orders, _place_one_flattrade_leg)
         else:
             from kiteconnect import KiteConnect  # type: ignore
 
@@ -5867,11 +5900,16 @@ async def _simulator_place_manual_order_core(body: ManualOrderRequest) -> dict:
                 print(f"[PLACE_ORDER][kite] response={result}", flush=True)
                 if result["status"] != "success":
                     return {"leg": leg.model_dump(), "status": "error", "message": result["message"]}
-                return {"leg": leg.model_dump(), "status": "success", "order_id": result["order_id"]}
+                return {
+                    "leg": leg.model_dump(), "status": "success", "order_id": result["order_id"],
+                    "broker_status": result.get("broker_status", "UNKNOWN"),
+                    "average_price": result.get("average_price"),
+                    "filled_quantity": result.get("filled_quantity"),
+                }
 
-            # Whole basket fires together instead of one leg waiting on the previous leg's
-            # broker round-trip — same reasoning as the Dhan branch above.
-            results = await asyncio.gather(*(_place_one_kite_leg(leg) for leg in body.orders))
+            # BUY-then-SELL batching — same reasoning as the Dhan branch above.
+            from features.order_execution import place_legs_hedge_ordered
+            results = await place_legs_hedge_ordered(body.orders, _place_one_kite_leg)
 
         any_ok = any(r["status"] == "success" for r in results)
         all_ok = bool(results) and all(r["status"] == "success" for r in results)
