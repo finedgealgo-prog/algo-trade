@@ -47,6 +47,7 @@ from pydantic import BaseModel
 from starlette.routing import WebSocketRoute
 
 from features.backtest_engine import run_backtest
+from features.iron_condor_v2_backtest import run_backtest as run_iron_condor_v2_backtest
 from features.portfolio_worker import strategy_worker
 from features.mongo_data     import MongoData
 from features.expiry_config  import seed_expiry_config
@@ -2197,6 +2198,50 @@ async def backtest_from_body(request: dict):
     """Run backtest synchronously — waits until complete then returns result."""
     try:
         return run_backtest(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class IronCondorV2Request(BaseModel):
+    underlying: str = "NIFTY"
+    start_date: str
+    end_date: str
+    capital: float = 1_000_000.0
+    risk_pct: float = 2.0
+    # Advanced — entry-filter thresholds. Leave as defaults unless you know
+    # why you're changing them; loosening iv_rank_min/adx_max lets more weeks
+    # through, at the cost of trading into worse regimes.
+    iv_rank_min: Optional[float] = None
+    adx_max: Optional[float] = None
+    adx_half_size: Optional[float] = None
+    min_iv_samples: Optional[int] = None
+
+
+@router.post("/iron-condor-v2/backtest")
+async def iron_condor_v2_backtest(request: IronCondorV2Request):
+    """V2 Condor: delta-based Iron Condor with IV-Rank/ADX entry filter,
+    skew-adjusted put strike, capital-based sizing, hybrid roll adjustment
+    (challenged side out + safe side closer by half), and a two-step profit
+    ladder. Runs synchronously — waits until complete then returns
+    trades + metrics."""
+    try:
+        overrides = {
+            k: v for k, v in {
+                "iv_rank_min": request.iv_rank_min,
+                "adx_max": request.adx_max,
+                "adx_half_size": request.adx_half_size,
+                "min_iv_samples": request.min_iv_samples,
+            }.items() if v is not None
+        }
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: run_iron_condor_v2_backtest(
+                request.underlying, request.start_date, request.end_date,
+                capital=request.capital, risk_pct=request.risk_pct,
+                **overrides,
+            ),
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
