@@ -6343,6 +6343,80 @@ async def backfill_investment_portfolio_symbol_token_all(limit: int = Query(defa
 
 
 
+@router.get("/mtm/historical-data")
+async def mtm_historical_data_range(
+    tokens: str = Query(default=""),
+    start_dt: str = Query(default=""),
+    end_dt: str = Query(default=""),
+    current_user: dict = Depends(app_auth.require_current_user),
+):
+    """
+    Per-minute OHLCV candle data for the given leg tokens over an explicit
+    [start_dt, end_dt] window — same response shape as algo.websocket's
+    /algo/mtm/historical-data (port 8003, candle-based), but takes an
+    explicit start/end range instead of "market open through one candle
+    instant", mirroring prices.algotest.in/historical's ?start_dt&end_dt
+    contract. Lives on algo.trade (port 8000) instead of algo.websocket so
+    it always picks up JWT_SECRET_KEY from this service's own .env.
+
+    Query params:
+        tokens   – comma-separated  e.g. 63926,63919,63923,63924
+        start_dt – ISO timestamp    e.g. 2026-07-24T09:15
+        end_dt   – ISO timestamp    e.g. 2026-07-24T15:30
+    """
+    from features.mtm_historical_data import get_mtm_historical_data_range
+
+    if not tokens.strip():
+        raise HTTPException(status_code=400, detail="tokens param is required")
+    if not start_dt.strip() or not end_dt.strip():
+        raise HTTPException(status_code=400, detail="start_dt and end_dt params are required")
+
+    db = MongoData()
+    try:
+        data = get_mtm_historical_data_range(db, tokens, start_dt, end_dt)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"mtm historical data error: {exc}") from exc
+    finally:
+        db.close()
+
+    return data
+
+
+@router.get("/spot/historical-data")
+async def spot_historical_data_range(
+    underlying: str = Query(default=""),
+    start_dt: str = Query(default=""),
+    end_dt: str = Query(default=""),
+    current_user: dict = Depends(app_auth.require_current_user),
+):
+    """
+    Explicit-range twin of algo.websocket's /algo/spot/historical-data (port
+    8003, candle-based) — see mtm_historical_data_range above for why this
+    lives on algo.trade (port 8000) instead.
+
+    Query params:
+        underlying – e.g. NIFTY, BANKNIFTY
+        start_dt   – ISO timestamp  e.g. 2026-07-24T09:15
+        end_dt     – ISO timestamp  e.g. 2026-07-24T15:30
+    """
+    from features.spot_historical_data import get_spot_historical_data_range
+
+    if not underlying.strip():
+        raise HTTPException(status_code=400, detail="underlying param is required")
+    if not start_dt.strip() or not end_dt.strip():
+        raise HTTPException(status_code=400, detail="start_dt and end_dt params are required")
+
+    db = MongoData()
+    try:
+        data = get_spot_historical_data_range(db, underlying, start_dt, end_dt)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"spot historical data error: {exc}") from exc
+    finally:
+        db.close()
+
+    return data
+
+
 app.include_router(router)
 app.include_router(trade_router)
 app.include_router(socket_router)
